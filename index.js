@@ -4,7 +4,7 @@ import admin from "firebase-admin";
 import cors from "cors";
 import dotenv from "dotenv";
 import axios from "axios";
-import { ref, set } from "firebase-admin/database"; // Remove 'push' import
+import { getDatabase } from "firebase-admin/database"; // Use getDatabase
 
 // Load environment variables
 dotenv.config();
@@ -16,8 +16,7 @@ const PORT = process.env.PORT || 5000;
 app.use(cors({
   origin: [
     'http://localhost:5173',
-    'https://server-dmx8.onrender.com.ngrok.io', // Replace with ngrok URL for testing
-    'https://server-dmx8.onrender.com.onrender.com', // Replace with your Render frontend URL
+    'https://server-dmx8.onrender.com', // Replace with your actual Render frontend URL
   ],
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type'],
@@ -36,7 +35,7 @@ admin.initializeApp({
   databaseURL: "https://inventorymanagementsyste-23fed-default-rtdb.firebaseio.com",
 });
 
-const db = admin.database();
+const db = getDatabase(); // Initialize Realtime Database
 
 // Nodemailer transporter
 const transporter = nodemailer.createTransport({
@@ -199,17 +198,17 @@ app.get("/payment-callback", async (req, res) => {
       return res.redirect("https://server-dmx8.onrender.com/subscribe?status=failed");
     }
 
-    const subscriptionRef = ref(db, `users/${userId}/subscriptionEndDate`);
+    const subscriptionRef = db.ref(`users/${userId}/subscriptionEndDate`);
     const currentDate = new Date();
     currentDate.setMonth(currentDate.getMonth() + 1);
     const subscriptionEndDate = currentDate.toISOString().split("T")[0];
 
-    await set(subscriptionRef, subscriptionEndDate);
+    await subscriptionRef.set(subscriptionEndDate);
     console.log("Subscription updated:", { userId, subscriptionEndDate });
 
-    const subscriptionsRef = ref(db, `users/${userId}/subscriptions`);
-    const newSubscriptionRef = push(subscriptionsRef);
-    await set(newSubscriptionRef, {
+    const subscriptionsRef = db.ref(`users/${userId}/subscriptions`);
+    const newSubscriptionRef = subscriptionsRef.push(); // Use push as a method
+    await newSubscriptionRef.set({
       tx_ref,
       amount: 15000,
       currency: "MWK",
