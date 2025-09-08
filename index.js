@@ -4,7 +4,7 @@ import admin from "firebase-admin";
 import cors from "cors";
 import dotenv from "dotenv";
 import axios from "axios";
-import { ref, set, push } from "firebase-admin/database";
+import { ref, set } from "firebase-admin/database"; // Remove 'push' import
 
 // Load environment variables
 dotenv.config();
@@ -16,8 +16,8 @@ const PORT = process.env.PORT || 5000;
 app.use(cors({
   origin: [
     'http://localhost:5173',
-    'https://your-ngrok-url.ngrok.io', // Replace with ngrok URL for testing
-    'https://your-frontend-url.onrender.com', // Replace with your Render frontend URL
+    'https://server-dmx8.onrender.com.ngrok.io', // Replace with ngrok URL for testing
+    'https://server-dmx8.onrender.com.onrender.com', // Replace with your Render frontend URL
   ],
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type'],
