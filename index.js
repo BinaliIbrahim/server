@@ -4,7 +4,7 @@ import admin from "firebase-admin";
 import cors from "cors";
 import dotenv from "dotenv";
 import axios from "axios";
-import { getDatabase } from "firebase-admin/database"; // Use getDatabase
+import { getDatabase } from "firebase-admin/database";
 
 // Load environment variables
 dotenv.config();
@@ -16,7 +16,7 @@ const PORT = process.env.PORT || 5000;
 app.use(cors({
   origin: [
     'http://localhost:5173',
-    'https://server-dmx8.onrender.com', // Replace with your actual Render frontend URL
+    'https://ibratechinventorysystem.netlify.app', // Netlify frontend URL
   ],
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type'],
@@ -166,12 +166,12 @@ app.get("/payment-callback", async (req, res) => {
 
   if (!status || !tx_ref || !userId) {
     console.error("Missing callback parameters", req.query);
-    return res.redirect("https://server-dmx8.onrender.com/subscribe?status=failed");
+    return res.redirect("https://ibratechinventorysystem.netlify.app/subscribe?status=failed");
   }
 
   if (status !== "success") {
     console.error("Payment failed in callback", { tx_ref, status });
-    return res.redirect("https://server-dmx8.onrender.com/subscribe?status=failed");
+    return res.redirect("https://ibratechinventorysystem.netlify.app/subscribe?status=failed");
   }
 
   try {
@@ -187,7 +187,7 @@ app.get("/payment-callback", async (req, res) => {
     const paymentData = response.data.data;
     if (paymentData.status !== "success") {
       console.error("Payment verification failed", { tx_ref, paymentData });
-      return res.redirect("https://server-dmx8.onrender.com/subscribe?status=failed");
+      return res.redirect("https://ibratechinventorysystem.netlify.app/subscribe?status=failed");
     }
 
     try {
@@ -195,7 +195,7 @@ app.get("/payment-callback", async (req, res) => {
       console.log("User verified:", userId);
     } catch (error) {
       console.error("Invalid user ID in payment callback", { userId, error: error.message });
-      return res.redirect("https://server-dmx8.onrender.com/subscribe?status=failed");
+      return res.redirect("https://ibratechinventorysystem.netlify.app/subscribe?status=failed");
     }
 
     const subscriptionRef = db.ref(`users/${userId}/subscriptionEndDate`);
@@ -207,7 +207,7 @@ app.get("/payment-callback", async (req, res) => {
     console.log("Subscription updated:", { userId, subscriptionEndDate });
 
     const subscriptionsRef = db.ref(`users/${userId}/subscriptions`);
-    const newSubscriptionRef = subscriptionsRef.push(); // Use push as a method
+    const newSubscriptionRef = subscriptionsRef.push();
     await newSubscriptionRef.set({
       tx_ref,
       amount: 15000,
@@ -218,16 +218,16 @@ app.get("/payment-callback", async (req, res) => {
     });
     console.log("Subscription history recorded:", { userId, tx_ref });
 
-    res.redirect("https://server-dmx8.onrender.com/dashboard");
+    res.redirect("https://ibratechinventorysystem.netlify.app/dashboard");
   } catch (error) {
     console.error("Error verifying payment:", {
       message: error.message,
       response: error.response?.data,
     });
-    res.redirect("https://server-dmx8.onrender.com/subscribe?status=failed");
+    res.redirect("https://ibratechinventorysystem.netlify.app/subscribe?status=failed");
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running at http://localhost:${PORT}`);
+  console.log(`🚀 Server running at https://server-dmx8.onrender.com/`);
 });
