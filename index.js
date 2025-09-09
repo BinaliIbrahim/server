@@ -16,7 +16,7 @@ const PORT = process.env.PORT || 5000;
 app.use(cors({
   origin: [
     'http://localhost:5173',
-    'https://ibratechinventorysystem.netlify.app', // Netlify frontend URL
+    'https://ibratechinventorysystem.netlify.app',
   ],
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type'],
@@ -35,7 +35,7 @@ admin.initializeApp({
   databaseURL: "https://inventorymanagementsyste-23fed-default-rtdb.firebaseio.com",
 });
 
-const db = getDatabase(); // Initialize Realtime Database
+const db = getDatabase();
 
 // Nodemailer transporter
 const transporter = nodemailer.createTransport({
@@ -85,6 +85,8 @@ app.get("/test-email", async (req, res) => {
 // Send email notification
 app.post("/api/send-email-notification", async (req, res) => {
   const { userId, userEmail, saleData, cartItems, totalAmount } = req.body;
+
+  console.log("Received email notification request:", { userId, userEmail, saleData });
 
   if (!userId || !userEmail || !saleData || !cartItems || !totalAmount) {
     console.error("Missing required fields", req.body);
@@ -158,13 +160,89 @@ app.post("/api/send-email-notification", async (req, res) => {
   }
 });
 
+// Initiate PayChangu Standard Checkout
+app.post("/api/initiate-payment", async (req, res) => {
+  const { userId, email, firstName, lastName, amount = 15000, currency = "MWK" } = req.body;
+
+  console.log("Received payment initiation request:", { userId, email, firstName, lastName, amount, currency });
+
+  if (!userId || !email || !firstName) {
+    console.error("Missing required payment fields", req.body);
+    return res.status(400).json({ message: "Missing required fields for payment initiation" });
+  }
+
+  try {
+    // Verify user in Firebase Auth
+    const userRecord = await admin.auth().getUser(userId);
+    if (userRecord.email !== email) {
+      console.error("Email mismatch", { userId, providedEmail: email, authEmail: userRecord.email });
+      return res.status(400).json({ message: "Email does not match user ID" });
+    }
+
+    // Generate unique tx_ref
+    const txRef = `${userId}-${Math.floor(Math.random() * 1000000000) + 1}`;
+
+    // Call PayChangu API
+    const payChanguResponse = await axios.post(
+      "https://api.paychangu.com/payment",
+      {
+        amount: amount.toString(),
+        currency,
+        email,
+        first_name: firstName,
+        last_name: lastName || "",
+        callback_url: "https://server-dmx8.onrender.com/payment-callback",
+        return_url: "https://ibratechinventorysystem.netlify.app/subscribe",
+        tx_ref: txRef,
+        customization: {
+          title: "InventoryMW Subscription",
+          description: "Monthly subscription for InventoryMW access (15,000 MWK)",
+        },
+        meta: {
+          uuid: userId,
+          user_name: `${firstName} ${lastName || ""}`.trim(),
+        },
+      },
+      {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${process.env.PAYCHANGU_SECRET_KEY}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    console.log("PayChangu payment initiated successfully:", payChanguResponse.data);
+
+    if (payChanguResponse.data.status === "success" && payChanguResponse.data.data.checkout_url) {
+      res.status(200).json({
+        message: "Payment initiated successfully",
+        checkout_url: payChanguResponse.data.data.checkout_url,
+      });
+    } else {
+      console.error("Invalid PayChangu response:", payChanguResponse.data);
+      res.status(500).json({ message: "Failed to initiate payment", error: payChanguResponse.data.message });
+    }
+  } catch (error) {
+    console.error("Error initiating payment:", {
+      message: error.message,
+      status: error.response?.status,
+      data: error.response?.data,
+    });
+    res.status(500).json({
+      message: "Failed to initiate payment",
+      error: error.response?.data?.message || error.message,
+    });
+  }
+});
+
 // Payment callback from PayChangu
 app.get("/payment-callback", async (req, res) => {
-  const { status, tx_ref, userId } = req.query;
+  const { status, tx_ref, uuid } = req.query;
 
-  console.log("Payment callback received:", { status, tx_ref, userId });
+  console.log("Payment callback received:", { status, tx_ref, uuid });
 
-  if (!status || !tx_ref || !userId) {
+  if (!status || !tx_ref || !uuid) {
     console.error("Missing callback parameters", req.query);
     return res.redirect("https://ibratechinventorysystem.netlify.app/subscribe?status=failed");
   }
@@ -191,22 +269,22 @@ app.get("/payment-callback", async (req, res) => {
     }
 
     try {
-      await admin.auth().getUser(userId);
-      console.log("User verified:", userId);
+      await admin.auth().getUser(uuid);
+      console.log("User verified:", uuid);
     } catch (error) {
-      console.error("Invalid user ID in payment callback", { userId, error: error.message });
+      console.error("Invalid user ID in payment callback", { uuid, error: error.message });
       return res.redirect("https://ibratechinventorysystem.netlify.app/subscribe?status=failed");
     }
 
-    const subscriptionRef = db.ref(`users/${userId}/subscriptionEndDate`);
+    const subscriptionRef = db.ref(`users/${uuid}/subscriptionEndDate`);
     const currentDate = new Date();
     currentDate.setMonth(currentDate.getMonth() + 1);
     const subscriptionEndDate = currentDate.toISOString().split("T")[0];
 
     await subscriptionRef.set(subscriptionEndDate);
-    console.log("Subscription updated:", { userId, subscriptionEndDate });
+    console.log("Subscription updated:", { uuid, subscriptionEndDate });
 
-    const subscriptionsRef = db.ref(`users/${userId}/subscriptions`);
+    const subscriptionsRef = db.ref(`users/${uuid}/subscriptions`);
     const newSubscriptionRef = subscriptionsRef.push();
     await newSubscriptionRef.set({
       tx_ref,
@@ -216,9 +294,9 @@ app.get("/payment-callback", async (req, res) => {
       subscriptionEndDate,
       status: "success",
     });
-    console.log("Subscription history recorded:", { userId, tx_ref });
+    console.log("Subscription history recorded:", { uuid, tx_ref });
 
-    res.redirect("https://ibratechinventorysystem.netlify.app/dashboard");
+    res.redirect("https://ibratechinventorysystem.netlify.app/subscribe?status=success");
   } catch (error) {
     console.error("Error verifying payment:", {
       message: error.message,
