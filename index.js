@@ -1,12 +1,10 @@
-import express from "express";
-import nodemailer from "nodemailer";
-import admin from "firebase-admin";
-import cors from "cors";
-import dotenv from "dotenv";
-import axios from "axios";
-import { getDatabase, ref, set } from "firebase-admin/database";
+const express = require("express");
+const nodemailer = require("nodemailer");
+const admin = require("firebase-admin");
+const cors = require("cors");
+const dotenv = require("dotenv");
+const axios = require("axios");
 
-// Load environment variables
 dotenv.config();
 
 const app = express();
@@ -35,7 +33,7 @@ admin.initializeApp({
   databaseURL: "https://inventorymanagementsyste-23fed-default-rtdb.firebaseio.com",
 });
 
-const db = getDatabase();
+const db = admin.database();
 
 // Nodemailer transporter
 const transporter = nodemailer.createTransport({
@@ -318,7 +316,7 @@ app.get("/payment-callback", async (req, res) => {
     console.log("PayChangu verification response:", JSON.stringify(response, null, 2));
 
     const paymentData = response;
-    const isSuccessful = paymentData.status === "success" && paymentData.status === "success";
+    const isSuccessful = paymentData.status === "success";
 
     // Verify user exists
     let email = paymentData.customer?.email || "unknown";
@@ -330,9 +328,9 @@ app.get("/payment-callback", async (req, res) => {
       user_name = userRecord.displayName || user_name;
     } catch (error) {
       console.error("Invalid user ID in payment callback", { userId, error: error.message });
-      const paymentRef = ref(db, `Payments/${tx_ref}`);
+      const paymentRef = db.ref(`Payments/${tx_ref}`);
       try {
-        await set(paymentRef, {
+        await paymentRef.set({
           userId,
           email,
           user_name,
@@ -354,10 +352,10 @@ app.get("/payment-callback", async (req, res) => {
     }
 
     // Update payment record
-    const paymentRef = ref(db, `Payments/${tx_ref}`);
+    const paymentRef = db.ref(`Payments/${tx_ref}`);
     console.log("Creating Firebase reference:", `Payments/${tx_ref}`);
     try {
-      await set(paymentRef, {
+      await paymentRef.set({
         userId,
         email,
         firstName: user_name.split(' ')[0] || "User",
@@ -387,9 +385,9 @@ app.get("/payment-callback", async (req, res) => {
       const currentDate = new Date();
       currentDate.setMonth(currentDate.getMonth() + 1);
       const subscriptionEndDate = currentDate.toISOString().split("T")[0];
-      const subscriptionRef = ref(db, `users/${userId}/subscriptionEndDate`);
+      const subscriptionRef = db.ref(`users/${userId}/subscriptionEndDate`);
       try {
-        await set(subscriptionRef, subscriptionEndDate);
+        await subscriptionRef.set(subscriptionEndDate);
         console.log("Subscription updated:", { userId, subscriptionEndDate });
       } catch (dbError) {
         console.error("Firebase write error for subscription:", dbError.message);
@@ -405,9 +403,9 @@ app.get("/payment-callback", async (req, res) => {
       message: error.message,
       response: error.response?.data,
     });
-    const paymentRef = ref(db, `Payments/${tx_ref}`);
+    const paymentRef = db.ref(`Payments/${tx_ref}`);
     try {
-      await set(paymentRef, {
+      await paymentRef.set({
         userId,
         email: "unknown",
         user_name: "unknown",
@@ -448,7 +446,7 @@ app.post("/api/payment-webhook", async (req, res) => {
     console.log("PayChangu verification response (webhook):", JSON.stringify(response, null, 2));
 
     const paymentData = response;
-    const isSuccessful = paymentData.status === "success" && paymentData.status === "success";
+    const isSuccessful = paymentData.status === "success";
 
     // Verify user
     let email = paymentData.customer?.email || "unknown";
@@ -460,9 +458,9 @@ app.post("/api/payment-webhook", async (req, res) => {
       user_name = userRecord.displayName || user_name;
     } catch (error) {
       console.error("Invalid user ID in webhook", { userId, error: error.message });
-      const paymentRef = ref(db, `Payments/${tx_ref}`);
+      const paymentRef = db.ref(`Payments/${tx_ref}`);
       try {
-        await set(paymentRef, {
+        await paymentRef.set({
           userId,
           email,
           user_name,
@@ -482,10 +480,10 @@ app.post("/api/payment-webhook", async (req, res) => {
     }
 
     // Update payment record
-    const paymentRef = ref(db, `Payments/${tx_ref}`);
+    const paymentRef = db.ref(`Payments/${tx_ref}`);
     console.log("Creating Firebase reference (webhook):", `Payments/${tx_ref}`);
     try {
-      await set(paymentRef, {
+      await paymentRef.set({
         userId,
         email,
         firstName: user_name.split(' ')[0] || "User",
@@ -513,9 +511,9 @@ app.post("/api/payment-webhook", async (req, res) => {
       const currentDate = new Date();
       currentDate.setMonth(currentDate.getMonth() + 1);
       const subscriptionEndDate = currentDate.toISOString().split("T")[0];
-      const subscriptionRef = ref(db, `users/${userId}/subscriptionEndDate`);
+      const subscriptionRef = db.ref(`users/${userId}/subscriptionEndDate`);
       try {
-        await set(subscriptionRef, subscriptionEndDate);
+        await subscriptionRef.set(subscriptionEndDate);
         console.log("Subscription updated (webhook):", { userId, subscriptionEndDate });
       } catch (dbError) {
         console.error("Firebase write error for subscription (webhook):", dbError.message);
@@ -528,9 +526,9 @@ app.post("/api/payment-webhook", async (req, res) => {
       message: error.message,
       response: error.response?.data,
     });
-    const paymentRef = ref(db, `Payments/${tx_ref}`);
+    const paymentRef = db.ref(`Payments/${tx_ref}`);
     try {
-      await set(paymentRef, {
+      await paymentRef.set({
         userId,
         email: "unknown",
         user_name: "unknown",
