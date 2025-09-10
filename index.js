@@ -4,7 +4,7 @@ import admin from "firebase-admin";
 import cors from "cors";
 import dotenv from "dotenv";
 import axios from "axios";
-import { getDatabase } from "firebase-admin/database";
+import { getDatabase, ref, set } from "firebase-admin/database";
 
 // Load environment variables
 dotenv.config();
@@ -315,14 +315,14 @@ app.get("/payment-callback", async (req, res) => {
   try {
     // Verify payment with PayChangu API
     const response = await verifyPayment(tx_ref);
-    console.log("PayChangu verification response:", JSON.stringify(response.data, null, 2));
+    console.log("PayChangu verification response:", JSON.stringify(response, null, 2));
 
-    const paymentData = response.data;
-    const isSuccessful = paymentData.status === "success" && paymentData.data?.status === "success";
+    const paymentData = response;
+    const isSuccessful = paymentData.status === "success" && paymentData.status === "success";
 
     // Verify user exists
-    let email = paymentData.data?.email || "unknown";
-    let user_name = paymentData.data?.meta?.user_name || "unknown";
+    let email = paymentData.customer?.email || "unknown";
+    let user_name = paymentData.meta?.user_name || "unknown";
     try {
       const userRecord = await admin.auth().getUser(userId);
       console.log("User verified:", userId);
@@ -331,19 +331,23 @@ app.get("/payment-callback", async (req, res) => {
     } catch (error) {
       console.error("Invalid user ID in payment callback", { userId, error: error.message });
       const paymentRef = ref(db, `Payments/${tx_ref}`);
-      await set(paymentRef, {
-        userId,
-        email,
-        user_name,
-        tx_ref,
-        amount: 15000,
-        currency: "MWK",
-        paymentDate: new Date().toISOString(),
-        status: "failed",
-        error: "Invalid user ID",
-        verifiedAt: Date.now(),
-      });
-      console.log("Updated payment to failed:", { userId, txRef });
+      try {
+        await set(paymentRef, {
+          userId,
+          email,
+          user_name,
+          tx_ref,
+          amount: paymentData.amount || 15000,
+          currency: paymentData.currency || "MWK",
+          paymentDate: new Date().toISOString(),
+          status: "failed",
+          error: "Invalid user ID",
+          verifiedAt: Date.now(),
+        });
+        console.log("Updated payment to failed:", { userId, tx_ref });
+      } catch (dbError) {
+        console.error("Firebase write error in callback:", dbError.message);
+      }
       return res.redirect(
         `http://localhost:5173/subscribe?status=not paid&error=${encodeURIComponent("Invalid user ID")}`
       );
@@ -351,24 +355,32 @@ app.get("/payment-callback", async (req, res) => {
 
     // Update payment record
     const paymentRef = ref(db, `Payments/${tx_ref}`);
-    await set(paymentRef, {
-      userId,
-      email,
-      firstName: user_name.split(' ')[0] || "User",
-      lastName: user_name.split(' ')[1] || "",
-      amount: paymentData.data?.amount || 15000,
-      currency: paymentData.data?.currency || "MWK",
-      tx_ref,
-      checkout_url: paymentData.data?.checkout_url || "unknown",
-      mode: paymentData.data?.mode || "sandbox",
-      status: isSuccessful ? "successful" : "failed",
-      paymentMethod: paymentData.data?.payment_method || "unknown",
-      transactionId: paymentData.data?.transaction_id || "unknown",
-      verifiedAt: Date.now(),
-      error: isSuccessful ? null : `Verification failed: ${paymentData.status || "unknown"}`,
-      createdAt: paymentData.data?.createdAt || Date.now(),
-    });
-    console.log(`Updated payment to ${isSuccessful ? "successful" : "failed"}:`, { userId, txRef });
+    console.log("Creating Firebase reference:", `Payments/${tx_ref}`);
+    try {
+      await set(paymentRef, {
+        userId,
+        email,
+        firstName: user_name.split(' ')[0] || "User",
+        lastName: user_name.split(' ')[1] || "",
+        amount: paymentData.amount || 15000,
+        currency: paymentData.currency || "MWK",
+        tx_ref,
+        checkout_url: paymentData.checkout_url || "unknown",
+        mode: paymentData.mode || "sandbox",
+        status: isSuccessful ? "successful" : "failed",
+        paymentMethod: paymentData.authorization?.channel || "unknown",
+        transactionId: paymentData.reference || "unknown",
+        verifiedAt: Date.now(),
+        error: isSuccessful ? null : `Verification failed: ${paymentData.status || "unknown"}`,
+        createdAt: new Date(paymentData.created_at).getTime() || Date.now(),
+      });
+      console.log(`Updated payment to ${isSuccessful ? "successful" : "failed"}:`, { userId, tx_ref });
+    } catch (dbError) {
+      console.error("Firebase write error in callback:", dbError.message);
+      return res.redirect(
+        `http://localhost:5173/subscribe?status=not paid&error=${encodeURIComponent("Server error updating payment")}`
+      );
+    }
 
     // Update subscription end date for successful payment
     if (isSuccessful) {
@@ -376,8 +388,12 @@ app.get("/payment-callback", async (req, res) => {
       currentDate.setMonth(currentDate.getMonth() + 1);
       const subscriptionEndDate = currentDate.toISOString().split("T")[0];
       const subscriptionRef = ref(db, `users/${userId}/subscriptionEndDate`);
-      await set(subscriptionRef, subscriptionEndDate);
-      console.log("Subscription updated:", { userId, subscriptionEndDate });
+      try {
+        await set(subscriptionRef, subscriptionEndDate);
+        console.log("Subscription updated:", { userId, subscriptionEndDate });
+      } catch (dbError) {
+        console.error("Firebase write error for subscription:", dbError.message);
+      }
     }
 
     res.redirect(
@@ -390,20 +406,24 @@ app.get("/payment-callback", async (req, res) => {
       response: error.response?.data,
     });
     const paymentRef = ref(db, `Payments/${tx_ref}`);
-    await set(paymentRef, {
-      userId,
-      email: "unknown",
-      user_name: "unknown",
-      tx_ref,
-      amount: 15000,
-      currency: "MWK",
-      paymentDate: new Date().toISOString(),
-      status: "failed",
-      error: error.response?.data?.message || error.message,
-      verifiedAt: Date.now(),
-      createdAt: Date.now(),
-    });
-    console.log("Updated payment to failed:", { userId, txRef });
+    try {
+      await set(paymentRef, {
+        userId,
+        email: "unknown",
+        user_name: "unknown",
+        tx_ref,
+        amount: 15000,
+        currency: "MWK",
+        paymentDate: new Date().toISOString(),
+        status: "failed",
+        error: error.response?.data?.message || error.message,
+        verifiedAt: Date.now(),
+        createdAt: Date.now(),
+      });
+      console.log("Updated payment to failed:", { userId, tx_ref });
+    } catch (dbError) {
+      console.error("Firebase write error in callback:", dbError.message);
+    }
     return res.redirect(
       `http://localhost:5173/subscribe?status=not paid&error=${encodeURIComponent("Payment verification error")}`
     );
@@ -425,14 +445,14 @@ app.post("/api/payment-webhook", async (req, res) => {
   try {
     // Verify payment
     const response = await verifyPayment(tx_ref);
-    console.log("PayChangu verification response (webhook):", JSON.stringify(response.data, null, 2));
+    console.log("PayChangu verification response (webhook):", JSON.stringify(response, null, 2));
 
-    const paymentData = response.data;
-    const isSuccessful = paymentData.status === "success" && paymentData.data?.status === "success";
+    const paymentData = response;
+    const isSuccessful = paymentData.status === "success" && paymentData.status === "success";
 
     // Verify user
-    let email = paymentData.data?.email || "unknown";
-    let user_name = paymentData.data?.meta?.user_name || "unknown";
+    let email = paymentData.customer?.email || "unknown";
+    let user_name = paymentData.meta?.user_name || "unknown";
     try {
       const userRecord = await admin.auth().getUser(userId);
       console.log("User verified (webhook):", userId);
@@ -441,42 +461,52 @@ app.post("/api/payment-webhook", async (req, res) => {
     } catch (error) {
       console.error("Invalid user ID in webhook", { userId, error: error.message });
       const paymentRef = ref(db, `Payments/${tx_ref}`);
-      await set(paymentRef, {
-        userId,
-        email,
-        user_name,
-        tx_ref,
-        amount: 15000,
-        currency: "MWK",
-        paymentDate: new Date().toISOString(),
-        status: "failed",
-        error: "Invalid user ID",
-        verifiedAt: Date.now(),
-      });
-      console.log("Updated payment to failed (webhook):", { userId, txRef });
+      try {
+        await set(paymentRef, {
+          userId,
+          email,
+          user_name,
+          tx_ref,
+          amount: paymentData.amount || 15000,
+          currency: paymentData.currency || "MWK",
+          paymentDate: new Date().toISOString(),
+          status: "failed",
+          error: "Invalid user ID",
+          verifiedAt: Date.now(),
+        });
+        console.log("Updated payment to failed (webhook):", { userId, tx_ref });
+      } catch (dbError) {
+        console.error("Firebase write error in webhook:", dbError.message);
+      }
       return res.status(200).json({ message: "Webhook processed" });
     }
 
     // Update payment record
     const paymentRef = ref(db, `Payments/${tx_ref}`);
-    await set(paymentRef, {
-      userId,
-      email,
-      firstName: user_name.split(' ')[0] || "User",
-      lastName: user_name.split(' ')[1] || "",
-      amount: paymentData.data?.amount || 15000,
-      currency: paymentData.data?.currency || "MWK",
-      tx_ref,
-      checkout_url: paymentData.data?.checkout_url || "unknown",
-      mode: paymentData.data?.mode || "sandbox",
-      status: isSuccessful ? "successful" : "failed",
-      paymentMethod: paymentData.data?.payment_method || "unknown",
-      transactionId: paymentData.data?.transaction_id || "unknown",
-      verifiedAt: Date.now(),
-      error: isSuccessful ? null : `Verification failed: ${paymentData.status || "unknown"}`,
-      createdAt: paymentData.data?.createdAt || Date.now(),
-    });
-    console.log(`Updated payment to ${isSuccessful ? "successful" : "failed"} (webhook):`, { userId, txRef });
+    console.log("Creating Firebase reference (webhook):", `Payments/${tx_ref}`);
+    try {
+      await set(paymentRef, {
+        userId,
+        email,
+        firstName: user_name.split(' ')[0] || "User",
+        lastName: user_name.split(' ')[1] || "",
+        amount: paymentData.amount || 15000,
+        currency: paymentData.currency || "MWK",
+        tx_ref,
+        checkout_url: paymentData.checkout_url || "unknown",
+        mode: paymentData.mode || "sandbox",
+        status: isSuccessful ? "successful" : "failed",
+        paymentMethod: paymentData.authorization?.channel || "unknown",
+        transactionId: paymentData.reference || "unknown",
+        verifiedAt: Date.now(),
+        error: isSuccessful ? null : `Verification failed: ${paymentData.status || "unknown"}`,
+        createdAt: new Date(paymentData.created_at).getTime() || Date.now(),
+      });
+      console.log(`Updated payment to ${isSuccessful ? "successful" : "failed"} (webhook):`, { userId, tx_ref });
+    } catch (dbError) {
+      console.error("Firebase write error in webhook:", dbError.message);
+      return res.status(200).json({ message: "Webhook processed with database error" });
+    }
 
     // Update subscription end date for successful payment
     if (isSuccessful) {
@@ -484,8 +514,12 @@ app.post("/api/payment-webhook", async (req, res) => {
       currentDate.setMonth(currentDate.getMonth() + 1);
       const subscriptionEndDate = currentDate.toISOString().split("T")[0];
       const subscriptionRef = ref(db, `users/${userId}/subscriptionEndDate`);
-      await set(subscriptionRef, subscriptionEndDate);
-      console.log("Subscription updated (webhook):", { userId, subscriptionEndDate });
+      try {
+        await set(subscriptionRef, subscriptionEndDate);
+        console.log("Subscription updated (webhook):", { userId, subscriptionEndDate });
+      } catch (dbError) {
+        console.error("Firebase write error for subscription (webhook):", dbError.message);
+      }
     }
 
     return res.status(200).json({ message: "Webhook processed" });
@@ -495,20 +529,24 @@ app.post("/api/payment-webhook", async (req, res) => {
       response: error.response?.data,
     });
     const paymentRef = ref(db, `Payments/${tx_ref}`);
-    await set(paymentRef, {
-      userId,
-      email: "unknown",
-      user_name: "unknown",
-      tx_ref,
-      amount: 15000,
-      currency: "MWK",
-      paymentDate: new Date().toISOString(),
-      status: "failed",
-      error: error.response?.data?.message || error.message,
-      verifiedAt: Date.now(),
-      createdAt: Date.now(),
-    });
-    console.log("Updated payment to failed (webhook):", { userId, txRef });
+    try {
+      await set(paymentRef, {
+        userId,
+        email: "unknown",
+        user_name: "unknown",
+        tx_ref,
+        amount: 15000,
+        currency: "MWK",
+        paymentDate: new Date().toISOString(),
+        status: "failed",
+        error: error.response?.data?.message || error.message,
+        verifiedAt: Date.now(),
+        createdAt: Date.now(),
+      });
+      console.log("Updated payment to failed (webhook):", { userId, tx_ref });
+    } catch (dbError) {
+      console.error("Firebase write error in webhook:", dbError.message);
+    }
     return res.status(200).json({ message: "Webhook processed" });
   }
 });
