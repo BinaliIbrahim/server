@@ -250,11 +250,13 @@ app.post("/api/initiate-payment", async (req, res) => {
 app.get("/payment-callback", async (req, res) => {
   const { status, tx_ref, uuid } = req.query;
 
-  console.log("Payment callback received:", { status, tx_ref, uuid });
+  console.log("Payment callback received:", { query: req.query, status, tx_ref, uuid });
 
   if (!status || !tx_ref || !uuid) {
-    console.error("Missing callback parameters", req.query);
-    return res.redirect("http://localhost:5173/subscribe?status=failed");
+    console.error("Missing callback parameters", { query: req.query });
+    return res.redirect(
+      `http://localhost:5173/subscribe?status=failed&error=${encodeURIComponent("Missing callback parameters")}`
+    );
   }
 
   if (status !== "success") {
@@ -267,9 +269,12 @@ app.get("/payment-callback", async (req, res) => {
       await db.ref(`users/${uuid}/subscriptions/${paymentKey}`).update({
         status: "failed",
         updatedAt: new Date().toISOString(),
+        error: `Payment status: ${status}`,
       });
     }
-    return res.redirect("http://localhost:5173/subscribe?status=failed");
+    return res.redirect(
+      `http://localhost:5173/subscribe?status=failed&error=${encodeURIComponent("Payment not successful")}`
+    );
   }
 
   try {
@@ -293,9 +298,12 @@ app.get("/payment-callback", async (req, res) => {
         await db.ref(`users/${uuid}/subscriptions/${paymentKey}`).update({
           status: "failed",
           updatedAt: new Date().toISOString(),
+          error: `Verification failed: ${paymentData.status}`,
         });
       }
-      return res.redirect("http://localhost:5173/subscribe?status=failed");
+      return res.redirect(
+        `http://localhost:5173/subscribe?status=failed&error=${encodeURIComponent("Payment verification failed")}`
+      );
     }
 
     try {
@@ -303,7 +311,9 @@ app.get("/payment-callback", async (req, res) => {
       console.log("User verified:", uuid);
     } catch (error) {
       console.error("Invalid user ID in payment callback", { uuid, error: error.message });
-      return res.redirect("http://localhost:5173/subscribe?status=failed");
+      return res.redirect(
+        `http://localhost:5173/subscribe?status=failed&error=${encodeURIComponent("Invalid user ID")}`
+      );
     }
 
     const subscriptionRef = db.ref(`users/${uuid}/subscriptionEndDate`);
@@ -345,7 +355,7 @@ app.get("/payment-callback", async (req, res) => {
       console.log("New payment record created:", { uuid, tx_ref });
     }
 
-    res.redirect("http://localhost:5173/subscribe?status=success");
+    res.redirect(`http://localhost:5173/subscribe?status=success`);
   } catch (error) {
     console.error("Error verifying payment:", {
       message: error.message,
@@ -359,9 +369,12 @@ app.get("/payment-callback", async (req, res) => {
       await db.ref(`users/${uuid}/subscriptions/${paymentKey}`).update({
         status: "failed",
         updatedAt: new Date().toISOString(),
+        error: error.response?.data?.message || error.message,
       });
     }
-    res.redirect("http://localhost:5173/subscribe?status=failed");
+    res.redirect(
+      `http://localhost:5173/subscribe?status=failed&error=${encodeURIComponent("Payment verification error")}`
+    );
   }
 });
 
