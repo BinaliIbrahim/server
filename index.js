@@ -86,8 +86,6 @@ app.get("/test-email", async (req, res) => {
 app.post("/api/send-email-notification", async (req, res) => {
   const { userId, userEmail, saleData, cartItems, totalAmount } = req.body;
 
-  console.log("Received email notification request:", { userId, userEmail, saleData });
-
   if (!userId || !userEmail || !saleData || !cartItems || !totalAmount) {
     console.error("Missing required fields", req.body);
     return res.status(400).json({ message: "Missing required fields" });
@@ -164,8 +162,6 @@ app.post("/api/send-email-notification", async (req, res) => {
 app.post("/api/initiate-payment", async (req, res) => {
   const { userId, email, firstName, lastName, amount = 15000, currency = "MWK" } = req.body;
 
-  console.log("Received payment initiation request:", { userId, email, firstName, lastName, amount, currency });
-
   if (!userId || !email || !firstName) {
     console.error("Missing required payment fields", req.body);
     return res.status(400).json({ message: "Missing required fields for payment initiation" });
@@ -192,7 +188,7 @@ app.post("/api/initiate-payment", async (req, res) => {
         first_name: firstName,
         last_name: lastName || "",
         callback_url: "https://server-dmx8.onrender.com/payment-callback",
-        return_url: "https://ibratechinventorysystem.netlify.app/subscribe",
+        return_url: "http://localhost:5173/subscribe",
         tx_ref: txRef,
         customization: {
           title: "InventoryMW Subscription",
@@ -244,12 +240,12 @@ app.get("/payment-callback", async (req, res) => {
 
   if (!status || !tx_ref || !uuid) {
     console.error("Missing callback parameters", req.query);
-    return res.redirect("https://ibratechinventorysystem.netlify.app/subscribe?status=failed");
+    return res.redirect("http://localhost:5173/subscribe?status=failed");
   }
 
   if (status !== "success") {
     console.error("Payment failed in callback", { tx_ref, status });
-    return res.redirect("https://ibratechinventorysystem.netlify.app/subscribe?status=failed");
+    return res.redirect("http://localhost:5173/subscribe?status=failed");
   }
 
   try {
@@ -265,7 +261,7 @@ app.get("/payment-callback", async (req, res) => {
     const paymentData = response.data.data;
     if (paymentData.status !== "success") {
       console.error("Payment verification failed", { tx_ref, paymentData });
-      return res.redirect("https://ibratechinventorysystem.netlify.app/subscribe?status=failed");
+      return res.redirect("http://localhost:5173/subscribe?status=failed");
     }
 
     try {
@@ -273,7 +269,7 @@ app.get("/payment-callback", async (req, res) => {
       console.log("User verified:", uuid);
     } catch (error) {
       console.error("Invalid user ID in payment callback", { uuid, error: error.message });
-      return res.redirect("https://ibratechinventorysystem.netlify.app/subscribe?status=failed");
+      return res.redirect("http://localhost:5173/subscribe?status=failed");
     }
 
     const subscriptionRef = db.ref(`users/${uuid}/subscriptionEndDate`);
@@ -296,13 +292,13 @@ app.get("/payment-callback", async (req, res) => {
     });
     console.log("Subscription history recorded:", { uuid, tx_ref });
 
-    res.redirect("https://ibratechinventorysystem.netlify.app/subscribe?status=success");
+    res.redirect("http://localhost:5173/subscribe?status=success");
   } catch (error) {
     console.error("Error verifying payment:", {
       message: error.message,
       response: error.response?.data,
     });
-    res.redirect("https://ibratechinventorysystem.netlify.app/subscribe?status=failed");
+    res.redirect("http://localhost:5173/subscribe?status=failed");
   }
 });
 
