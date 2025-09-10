@@ -14,14 +14,14 @@ const PORT = process.env.PORT || 5000;
 
 // Base URL for production or local development
 const BASE_URL = process.env.NODE_ENV === "production"
-  ? "https://ibratechinventorysystem.netlify.app"
+  ? "http://localhost:5173/"
   : "http://localhost:5173";
 
 // Middleware
 app.use(cors({
   origin: [
     'http://localhost:5173',
-    'https://ibratechinventorysystem.netlify.app',
+    'http://localhost:5173/',
   ],
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type'],
