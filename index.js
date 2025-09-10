@@ -249,6 +249,31 @@ app.post("/api/initiate-payment", async (req, res) => {
   }
 });
 
+// Helper function to verify payment with retries
+async function verifyPayment(tx_ref, retries = 3, delay = 1000) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const response = await axios.get(`https://api.paychangu.com/verify-payment/${tx_ref}`, {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${process.env.PAYCHANGU_SECRET_KEY}`,
+        },
+      });
+      return response.data;
+    } catch (error) {
+      console.error(`Verification attempt ${attempt} failed for tx_ref ${tx_ref}:`, {
+        message: error.message,
+        response: error.response?.data,
+      });
+      if (attempt < retries) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        throw error;
+      }
+    }
+  }
+}
+
 // Payment callback from PayChangu (GET)
 app.get("/payment-callback", async (req, res) => {
   const { status, tx_ref, uuid } = req.query;
@@ -267,31 +292,50 @@ app.get("/payment-callback", async (req, res) => {
 
   if (!tx_ref || !userId) {
     console.error("Missing critical callback parameters", { query: req.query, extractedUserId: userId });
-    // Create a failed payment record if possible
     if (userId && tx_ref) {
-      const newPaymentRef = db.ref(`users/${userId}/subscriptions`).push();
-      await newPaymentRef.set({
-        tx_ref,
-        amount: 15000, // Default amount
-        currency: "MWK",
-        paymentDate: new Date().toISOString(),
-        status: "failed",
-        error: "Missing transaction reference or user ID",
-        updatedAt: new Date().toISOString(),
-      });
-      console.log("Created failed payment record:", { userId, txRef });
+      const paymentRef = db.ref(`users/${userId}/subscriptions`).orderByChild("tx_ref").equalTo(tx_ref);
+      const snapshot = await paymentRef.once("value");
+      if (!snapshot.exists()) {
+        const newPaymentRef = db.ref(`users/${userId}/subscriptions`).push();
+        await newPaymentRef.set({
+          tx_ref,
+          amount: 15000,
+          currency: "MWK",
+          paymentDate: new Date().toISOString(),
+          status: "failed",
+          error: "Missing transaction reference or user ID",
+          updatedAt: new Date().toISOString(),
+        });
+        console.log("Created failed payment record:", { userId, txRef });
+      } else {
+        console.log("Skipping duplicate failed record for tx_ref:", tx_ref);
+      }
     }
     return res.redirect(
       `http://localhost:5173/subscribe?status=failed&error=${encodeURIComponent("Missing transaction reference or user ID")}`
     );
   }
 
+  // Check for recent processing to avoid duplicates
+  const paymentRef = db.ref(`users/${userId}/subscriptions`).orderByChild("tx_ref").equalTo(tx_ref);
+  const snapshot = await paymentRef.once("value");
+  if (snapshot.exists()) {
+    const paymentData = Object.values(snapshot.val())[0];
+    const updatedAt = new Date(paymentData.updatedAt);
+    const now = new Date();
+    const timeDiff = (now - updatedAt) / 1000 / 60; // Time difference in minutes
+    if (timeDiff < 5 && paymentData.status !== "pending") {
+      console.log("Ignoring duplicate callback for tx_ref:", tx_ref);
+      return res.redirect(
+        `http://localhost:5173/subscribe?status=${paymentData.status}&error=${encodeURIComponent(paymentData.error || "")}`
+      );
+    }
+  }
+
   // If status is missing or not success, verify payment
   const effectiveStatus = status || "failed";
   if (effectiveStatus !== "success") {
     console.error("Payment failed or incomplete in callback", { tx_ref, status: effectiveStatus, userId });
-    const paymentRef = db.ref(`users/${userId}/subscriptions`).orderByChild("tx_ref").equalTo(tx_ref);
-    const snapshot = await paymentRef.once("value");
     if (snapshot.exists()) {
       const paymentKey = Object.keys(snapshot.val())[0];
       await db.ref(`users/${userId}/subscriptions/${paymentKey}`).update({
@@ -319,21 +363,13 @@ app.get("/payment-callback", async (req, res) => {
   }
 
   try {
-    // Verify payment with PayChangu
-    const response = await axios.get(`https://api.paychangu.com/verify-payment/${tx_ref}`, {
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${process.env.PAYCHANGU_SECRET_KEY}`,
-      },
-    });
-
+    // Verify payment with retries
+    const response = await verifyPayment(tx_ref);
     console.log("PayChangu verification response:", JSON.stringify(response.data, null, 2));
 
-    const paymentData = response.data.data;
+    const paymentData = response.data;
     if (paymentData.status !== "success") {
       console.error("Payment verification failed", { tx_ref, paymentData });
-      const paymentRef = db.ref(`users/${userId}/subscriptions`).orderByChild("tx_ref").equalTo(tx_ref);
-      const snapshot = await paymentRef.once("value");
       if (snapshot.exists()) {
         const paymentKey = Object.keys(snapshot.val())[0];
         await db.ref(`users/${userId}/subscriptions/${paymentKey}`).update({
@@ -346,8 +382,8 @@ app.get("/payment-callback", async (req, res) => {
         const newPaymentRef = db.ref(`users/${userId}/subscriptions`).push();
         await newPaymentRef.set({
           tx_ref,
-          amount: paymentData.amount || 15000,
-          currency: paymentData.currency || "MWK",
+          amount: paymentData.data?.amount || 15000,
+          currency: paymentData.data?.currency || "MWK",
           paymentDate: new Date().toISOString(),
           status: "failed",
           error: `Verification failed: ${paymentData.status}`,
@@ -364,10 +400,15 @@ app.get("/payment-callback", async (req, res) => {
     try {
       const userRecord = await admin.auth().getUser(userId);
       console.log("User verified:", userId);
-      // Use email and name from Firebase Auth if not provided by PayChangu
-      const email = paymentData.email || userRecord.email || "unknown";
-      const user_name = paymentData.meta?.user_name || userRecord.displayName || "unknown";
-      
+      // Use fallback email and name from pending record or Firebase Auth
+      let email = paymentData.data?.email || userRecord.email || "unknown";
+      let user_name = paymentData.data?.meta?.user_name || userRecord.displayName || "unknown";
+      if (snapshot.exists()) {
+        const existingData = Object.values(snapshot.val())[0];
+        email = email !== "unknown" ? email : existingData.email || "unknown";
+        user_name = user_name !== "unknown" ? user_name : existingData.user_name || "unknown";
+      }
+
       // Update subscription end date
       const subscriptionRef = db.ref(`users/${userId}/subscriptionEndDate`);
       const currentDate = new Date();
@@ -378,16 +419,14 @@ app.get("/payment-callback", async (req, res) => {
       console.log("Subscription updated:", { userId, subscriptionEndDate });
 
       // Update or create payment record
-      const paymentRef = db.ref(`users/${userId}/subscriptions`).orderByChild("tx_ref").equalTo(tx_ref);
-      const snapshot = await paymentRef.once("value");
       if (snapshot.exists()) {
         const paymentKey = Object.keys(snapshot.val())[0];
         await db.ref(`users/${userId}/subscriptions/${paymentKey}`).update({
           status: "success",
           subscriptionEndDate,
-          amount: paymentData.amount,
-          currency: paymentData.currency,
-          paymentMethod: paymentData.payment_method || "unknown",
+          amount: paymentData.data.amount,
+          currency: paymentData.data.currency,
+          paymentMethod: paymentData.data.payment_method || "unknown",
           email,
           user_name,
           updatedAt: new Date().toISOString(),
@@ -397,12 +436,12 @@ app.get("/payment-callback", async (req, res) => {
         const newPaymentRef = db.ref(`users/${userId}/subscriptions`).push();
         await newPaymentRef.set({
           tx_ref,
-          amount: paymentData.amount,
-          currency: paymentData.currency,
+          amount: paymentData.data.amount,
+          currency: paymentData.data.currency,
           paymentDate: new Date().toISOString(),
           subscriptionEndDate,
           status: "success",
-          paymentMethod: paymentData.payment_method || "unknown",
+          paymentMethod: paymentData.data.payment_method || "unknown",
           email,
           user_name,
           updatedAt: new Date().toISOString(),
@@ -413,8 +452,6 @@ app.get("/payment-callback", async (req, res) => {
       res.redirect(`http://localhost:5173/subscribe?status=success`);
     } catch (error) {
       console.error("Invalid user ID in payment callback", { userId, error: error.message });
-      const paymentRef = db.ref(`users/${userId}/subscriptions`).orderByChild("tx_ref").equalTo(tx_ref);
-      const snapshot = await paymentRef.once("value");
       if (snapshot.exists()) {
         const paymentKey = Object.keys(snapshot.val())[0];
         await db.ref(`users/${userId}/subscriptions/${paymentKey}`).update({
@@ -427,8 +464,8 @@ app.get("/payment-callback", async (req, res) => {
         const newPaymentRef = db.ref(`users/${userId}/subscriptions`).push();
         await newPaymentRef.set({
           tx_ref,
-          amount: paymentData.amount || 15000,
-          currency: paymentData.currency || "MWK",
+          amount: paymentData.data?.amount || 15000,
+          currency: paymentData.data?.currency || "MWK",
           paymentDate: new Date().toISOString(),
           status: "failed",
           error: "Invalid user ID",
@@ -445,8 +482,6 @@ app.get("/payment-callback", async (req, res) => {
       message: error.message,
       response: error.response?.data,
     });
-    const paymentRef = db.ref(`users/${userId}/subscriptions`).orderByChild("tx_ref").equalTo(tx_ref);
-    const snapshot = await paymentRef.once("value");
     if (snapshot.exists()) {
       const paymentKey = Object.keys(snapshot.val())[0];
       await db.ref(`users/${userId}/subscriptions/${paymentKey}`).update({
@@ -486,8 +521,19 @@ app.post("/api/payment-webhook", async (req, res) => {
     return res.status(400).json({ message: "Missing required webhook parameters" });
   }
 
+  // Check for recent processing to avoid duplicates
   const paymentRef = db.ref(`users/${userId}/subscriptions`).orderByChild("tx_ref").equalTo(tx_ref);
   const snapshot = await paymentRef.once("value");
+  if (snapshot.exists()) {
+    const paymentData = Object.values(snapshot.val())[0];
+    const updatedAt = new Date(paymentData.updatedAt);
+    const now = new Date();
+    const timeDiff = (now - updatedAt) / 1000 / 60; // Time difference in minutes
+    if (timeDiff < 5 && paymentData.status !== "pending") {
+      console.log("Ignoring duplicate webhook for tx_ref:", tx_ref);
+      return res.status(200).json({ message: "Webhook processed (duplicate)" });
+    }
+  }
 
   const effectiveStatus = status || "failed";
   if (effectiveStatus !== "success") {
@@ -518,16 +564,10 @@ app.post("/api/payment-webhook", async (req, res) => {
 
   try {
     // Verify payment
-    const response = await axios.get(`https://api.paychangu.com/verify-payment/${tx_ref}`, {
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${process.env.PAYCHANGU_SECRET_KEY}`,
-      },
-    });
-
+    const response = await verifyPayment(tx_ref);
     console.log("PayChangu verification response (webhook):", JSON.stringify(response.data, null, 2));
 
-    const paymentData = response.data.data;
+    const paymentData = response.data;
     if (paymentData.status !== "success") {
       console.error("Webhook payment verification failed", { tx_ref, paymentData });
       if (snapshot.exists()) {
@@ -542,8 +582,8 @@ app.post("/api/payment-webhook", async (req, res) => {
         const newPaymentRef = db.ref(`users/${userId}/subscriptions`).push();
         await newPaymentRef.set({
           tx_ref,
-          amount: paymentData.amount || 15000,
-          currency: paymentData.currency || "MWK",
+          amount: paymentData.data?.amount || 15000,
+          currency: paymentData.data?.currency || "MWK",
           paymentDate: new Date().toISOString(),
           status: "failed",
           error: `Verification failed: ${paymentData.status}`,
@@ -558,8 +598,13 @@ app.post("/api/payment-webhook", async (req, res) => {
     try {
       const userRecord = await admin.auth().getUser(userId);
       console.log("User verified (webhook):", userId);
-      const email = paymentData.email || userRecord.email || "unknown";
-      const user_name = paymentData.meta?.user_name || userRecord.displayName || "unknown";
+      let email = paymentData.data?.email || userRecord.email || "unknown";
+      let user_name = paymentData.data?.meta?.user_name || userRecord.displayName || "unknown";
+      if (snapshot.exists()) {
+        const existingData = Object.values(snapshot.val())[0];
+        email = email !== "unknown" ? email : existingData.email || "unknown";
+        user_name = user_name !== "unknown" ? user_name : existingData.user_name || "unknown";
+      }
 
       // Update subscription end date
       const subscriptionRef = db.ref(`users/${userId}/subscriptionEndDate`);
@@ -576,9 +621,9 @@ app.post("/api/payment-webhook", async (req, res) => {
         await db.ref(`users/${userId}/subscriptions/${paymentKey}`).update({
           status: "success",
           subscriptionEndDate,
-          amount: paymentData.amount,
-          currency: paymentData.currency,
-          paymentMethod: paymentData.payment_method || "unknown",
+          amount: paymentData.data.amount,
+          currency: paymentData.data.currency,
+          paymentMethod: paymentData.data.payment_method || "unknown",
           email,
           user_name,
           updatedAt: new Date().toISOString(),
@@ -588,12 +633,12 @@ app.post("/api/payment-webhook", async (req, res) => {
         const newPaymentRef = db.ref(`users/${userId}/subscriptions`).push();
         await newPaymentRef.set({
           tx_ref,
-          amount: paymentData.amount,
-          currency: paymentData.currency,
+          amount: paymentData.data.amount,
+          currency: paymentData.data.currency,
           paymentDate: new Date().toISOString(),
           subscriptionEndDate,
           status: "success",
-          paymentMethod: paymentData.payment_method || "unknown",
+          paymentMethod: paymentData.data.payment_method || "unknown",
           email,
           user_name,
           updatedAt: new Date().toISOString(),
@@ -616,8 +661,8 @@ app.post("/api/payment-webhook", async (req, res) => {
         const newPaymentRef = db.ref(`users/${userId}/subscriptions`).push();
         await newPaymentRef.set({
           tx_ref,
-          amount: paymentData.amount || 15000,
-          currency: paymentData.currency || "MWK",
+          amount: paymentData.data?.amount || 15000,
+          currency: paymentData.data?.currency || "MWK",
           paymentDate: new Date().toISOString(),
           status: "failed",
           error: "Invalid user ID",
