@@ -243,16 +243,20 @@ app.post("/api/initiate-payment", async (req, res) => {
 app.get("/api/payment-callback", async (req, res) => {
   const { status, tx_ref, uuid } = req.query;
 
-  console.log("Payment callback received:", { status, tx_ref, uuid });
+  console.log("Payment callback received:", { query: req.query });
 
   if (!status || !tx_ref || !uuid) {
-    console.error("Missing callback parameters", req.query);
-    return res.redirect(`${BASE_URL}/subscribe?status=failed&error=Missing%20callback%20parameters`);
+    console.error("Missing callback parameters", { query: req.query });
+    let errorMessage = "Missing callback parameters: ";
+    if (!status) errorMessage += "status ";
+    if (!tx_ref) errorMessage += "tx_ref ";
+    if (!uuid) errorMessage += "uuid";
+    return res.redirect(`${BASE_URL}/subscribe?status=failed&error=${encodeURIComponent(errorMessage)}`);
   }
 
   if (status !== "success") {
     console.error("Payment failed in callback", { tx_ref, status });
-    return res.redirect(`${BASE_URL}/subscribe?status=failed&error=Payment%20failed`);
+    return res.redirect(`${BASE_URL}/subscribe?status=failed&error=${encodeURIComponent(`Payment failed with status: ${status}`)}`);
   }
 
   try {
@@ -268,7 +272,7 @@ app.get("/api/payment-callback", async (req, res) => {
     const paymentData = response.data.data;
     if (paymentData.status !== "success") {
       console.error("Payment verification failed", { tx_ref, paymentData });
-      return res.redirect(`${BASE_URL}/subscribe?status=failed&error=Payment%20verification%20failed`);
+      return res.redirect(`${BASE_URL}/subscribe?status=failed&error=${encodeURIComponent("Payment verification failed")}`);
     }
 
     try {
@@ -276,7 +280,7 @@ app.get("/api/payment-callback", async (req, res) => {
       console.log("User verified:", uuid);
     } catch (error) {
       console.error("Invalid user ID in payment callback", { uuid, error: error.message });
-      return res.redirect(`${BASE_URL}/subscribe?status=failed&error=Invalid%20user%20ID`);
+      return res.redirect(`${BASE_URL}/subscribe?status=failed&error=${encodeURIComponent("Invalid user ID")}`);
     }
 
     const currentDate = new Date();
