@@ -158,6 +158,38 @@ app.post("/api/send-email-notification", async (req, res) => {
   }
 });
 
+// Retry helper for PayChangu API
+async function callPayChanguAPI(payload, retries = 3, delay = 1000) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const response = await axios.post(
+        "https://api.paychangu.com/payment",
+        payload,
+        {
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${process.env.PAYCHANGU_SECRET_KEY}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 10000,
+        }
+      );
+      return response;
+    } catch (error) {
+      console.error(`PayChangu API attempt ${attempt} failed:`, {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      if (attempt < retries && (error.response?.status === 429 || error.code === 'ECONNABORTED')) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        throw error;
+      }
+    }
+  }
+}
+
 // Initiate PayChangu Standard Checkout
 app.post("/api/initiate-payment", async (req, res) => {
   const { userId, email, firstName, lastName, amount = 15000, currency = "MWK" } = req.body;
@@ -166,7 +198,7 @@ app.post("/api/initiate-payment", async (req, res) => {
 
   if (!userId || !email || !firstName) {
     console.error("Missing required payment fields", req.body);
-    return res.status(400).json({ message: "Missing required fields for payment initiation" });
+    return res.status(400).json({ message: "Missing required fields for payment initiation", error: "userId, email, and firstName are required" });
   }
 
   try {
@@ -174,45 +206,35 @@ app.post("/api/initiate-payment", async (req, res) => {
     const userRecord = await admin.auth().getUser(userId);
     if (userRecord.email !== email) {
       console.error("Email mismatch", { userId, providedEmail: email, authEmail: userRecord.email });
-      return res.status(400).json({ message: "Email does not match user ID" });
+      return res.status(400).json({ message: "Email does not match user ID", error: "Invalid email" });
     }
 
     // Generate unique tx_ref
     const txRef = `${userId}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-    // Call PayChangu API
-    const payChanguResponse = await axios.post(
-      "https://api.paychangu.com/payment",
-      {
-        amount: amount.toString(),
-        currency,
-        email,
-        first_name: firstName,
-        last_name: lastName || "",
-        callback_url: "https://server-dmx8.onrender.com/payment-callback",
-        return_url: "http://localhost:5173/subscribe",
-        tx_ref: txRef,
-        customization: {
-          title: "InventoryMW Subscription",
-          description: "Monthly subscription for InventoryMW access (15,000 MWK)",
-        },
-        meta: {
-          uuid: userId,
-          user_name: `${firstName} ${lastName || ""}`.trim(),
-        },
+    // Call PayChangu API with retry
+    const payChanguResponse = await callPayChanguAPI({
+      amount: amount.toString(),
+      currency,
+      email,
+      first_name: firstName,
+      last_name: lastName || "",
+      callback_url: "https://server-dmx8.onrender.com/payment-callback",
+      return_url: "http://localhost:5173/subscribe",
+      tx_ref: txRef,
+      customization: {
+        title: "InventoryMW Subscription",
+        description: "Monthly subscription for InventoryMW access (15,000 MWK)",
       },
-      {
-        headers: {
-          Accept: "application/json",
-          Authorization: `Bearer ${process.env.PAYCHANGU_SECRET_KEY}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+      meta: {
+        uuid: userId,
+        user_name: `${firstName} ${lastName || ""}`.trim(),
+      },
+    });
 
-    console.log("PayChangu payment response:", payChanguResponse.data);
+    console.log("PayChangu payment response:", JSON.stringify(payChanguResponse.data, null, 2));
 
-    if (payChanguResponse.data.status === "success" && payChanguResponse.data.data.checkout_url) {
+    if (payChanguResponse.data.status === "success" && payChanguResponse.data.data?.checkout_url) {
       res.status(200).json({
         message: "Payment initiated successfully",
         checkout_url: payChanguResponse.data.data.checkout_url,
@@ -221,7 +243,11 @@ app.post("/api/initiate-payment", async (req, res) => {
       });
     } else {
       console.error("Invalid PayChangu response:", payChanguResponse.data);
-      res.status(500).json({ message: "Failed to initiate payment", error: payChanguResponse.data.message });
+      res.status(500).json({
+        message: "Failed to initiate payment",
+        error: payChanguResponse.data.message || "No checkout URL received",
+        tx_ref: txRef,
+      });
     }
   } catch (error) {
     console.error("Error initiating payment:", {
@@ -232,6 +258,7 @@ app.post("/api/initiate-payment", async (req, res) => {
     res.status(500).json({
       message: "Failed to initiate payment",
       error: error.response?.data?.message || error.message,
+      tx_ref: `${userId}-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     });
   }
 });
@@ -245,6 +272,7 @@ async function verifyPayment(tx_ref, retries = 3, delay = 1000) {
           Accept: "application/json",
           Authorization: `Bearer ${process.env.PAYCHANGU_SECRET_KEY}`,
         },
+        timeout: 10000,
       });
       return response.data;
     } catch (error) {
@@ -252,7 +280,7 @@ async function verifyPayment(tx_ref, retries = 3, delay = 1000) {
         message: error.message,
         response: error.response?.data,
       });
-      if (attempt < retries) {
+      if (attempt < retries && (error.response?.status === 429 || error.code === 'ECONNABORTED')) {
         await new Promise(resolve => setTimeout(resolve, delay));
       } else {
         throw error;
