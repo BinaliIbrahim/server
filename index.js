@@ -1,9 +1,9 @@
-const express = require("express");
-const nodemailer = require("nodemailer");
-const admin = require("firebase-admin");
-const cors = require("cors");
-const dotenv = require("dotenv");
-const axios = require("axios");
+import express from "express";
+import nodemailer from "nodemailer";
+import admin from "firebase-admin";
+import cors from "cors";
+import dotenv from "dotenv";
+import axios from "axios";
 
 dotenv.config();
 
