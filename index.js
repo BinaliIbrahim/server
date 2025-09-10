@@ -12,6 +12,11 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Base URL for production or local development
+const BASE_URL = process.env.NODE_ENV === "production"
+  ? "https://ibratechinventorysystem.netlify.app"
+  : "http://localhost:5173";
+
 // Middleware
 app.use(cors({
   origin: [
@@ -162,6 +167,8 @@ app.post("/api/send-email-notification", async (req, res) => {
 app.post("/api/initiate-payment", async (req, res) => {
   const { userId, email, firstName, lastName, amount = 15000, currency = "MWK" } = req.body;
 
+  console.log("Received payment initiation request:", { userId, email, firstName, lastName, amount, currency });
+
   if (!userId || !email || !firstName) {
     console.error("Missing required payment fields", req.body);
     return res.status(400).json({ message: "Missing required fields for payment initiation" });
@@ -176,7 +183,7 @@ app.post("/api/initiate-payment", async (req, res) => {
     }
 
     // Generate unique tx_ref
-    const txRef = `${userId}-${Math.floor(Math.random() * 1000000000) + 1}`;
+    const txRef = `${userId}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
     // Call PayChangu API
     const payChanguResponse = await axios.post(
@@ -187,8 +194,8 @@ app.post("/api/initiate-payment", async (req, res) => {
         email,
         first_name: firstName,
         last_name: lastName || "",
-        callback_url: "https://server-dmx8.onrender.com/payment-callback",
-        return_url: "http://localhost:5173/subscribe",
+        callback_url: "https://server-dmx8.onrender.com/api/payment-callback",
+        return_url: `${BASE_URL}/subscribe`,
         tx_ref: txRef,
         customization: {
           title: "InventoryMW Subscription",
@@ -208,7 +215,7 @@ app.post("/api/initiate-payment", async (req, res) => {
       }
     );
 
-    console.log("PayChangu payment initiated successfully:", payChanguResponse.data);
+    console.log("PayChangu payment response:", payChanguResponse.data);
 
     if (payChanguResponse.data.status === "success" && payChanguResponse.data.data.checkout_url) {
       res.status(200).json({
@@ -217,7 +224,7 @@ app.post("/api/initiate-payment", async (req, res) => {
       });
     } else {
       console.error("Invalid PayChangu response:", payChanguResponse.data);
-      res.status(500).json({ message: "Failed to initiate payment", error: payChanguResponse.data.message });
+      res.status(500).json({ message: "Failed to initiate payment", error: payChanguResponse.data.message || "Invalid response from payment gateway" });
     }
   } catch (error) {
     console.error("Error initiating payment:", {
@@ -233,19 +240,19 @@ app.post("/api/initiate-payment", async (req, res) => {
 });
 
 // Payment callback from PayChangu
-app.get("/payment-callback", async (req, res) => {
+app.get("/api/payment-callback", async (req, res) => {
   const { status, tx_ref, uuid } = req.query;
 
   console.log("Payment callback received:", { status, tx_ref, uuid });
 
   if (!status || !tx_ref || !uuid) {
     console.error("Missing callback parameters", req.query);
-    return res.redirect("http://localhost:5173/subscribe?status=failed");
+    return res.redirect(`${BASE_URL}/subscribe?status=failed&error=Missing%20callback%20parameters`);
   }
 
   if (status !== "success") {
     console.error("Payment failed in callback", { tx_ref, status });
-    return res.redirect("http://localhost:5173/subscribe?status=failed");
+    return res.redirect(`${BASE_URL}/subscribe?status=failed&error=Payment%20failed`);
   }
 
   try {
@@ -261,7 +268,7 @@ app.get("/payment-callback", async (req, res) => {
     const paymentData = response.data.data;
     if (paymentData.status !== "success") {
       console.error("Payment verification failed", { tx_ref, paymentData });
-      return res.redirect("http://localhost:5173/subscribe?status=failed");
+      return res.redirect(`${BASE_URL}/subscribe?status=failed&error=Payment%20verification%20failed`);
     }
 
     try {
@@ -269,36 +276,36 @@ app.get("/payment-callback", async (req, res) => {
       console.log("User verified:", uuid);
     } catch (error) {
       console.error("Invalid user ID in payment callback", { uuid, error: error.message });
-      return res.redirect("http://localhost:5173/subscribe?status=failed");
+      return res.redirect(`${BASE_URL}/subscribe?status=failed&error=Invalid%20user%20ID`);
     }
 
-    const subscriptionRef = db.ref(`users/${uuid}/subscriptionEndDate`);
     const currentDate = new Date();
-    currentDate.setMonth(currentDate.getMonth() + 1);
-    const subscriptionEndDate = currentDate.toISOString().split("T")[0];
-
-    await subscriptionRef.set(subscriptionEndDate);
-    console.log("Subscription updated:", { uuid, subscriptionEndDate });
+    const startDate = currentDate.toISOString().split("T")[0]; // YYYY-MM-DD
+    const endDate = new Date(currentDate);
+    endDate.setMonth(endDate.getMonth() + 1); // 1-month subscription
+    const formattedEndDate = endDate.toISOString().split("T")[0]; // YYYY-MM-DD
 
     const subscriptionsRef = db.ref(`users/${uuid}/subscriptions`);
     const newSubscriptionRef = subscriptionsRef.push();
     await newSubscriptionRef.set({
       tx_ref,
-      amount: 15000,
-      currency: "MWK",
-      paymentDate: new Date().toISOString(),
-      subscriptionEndDate,
-      status: "success",
+      amount: paymentData.amount,
+      currency: paymentData.currency || "MWK",
+      subscription_date: currentDate.toISOString(), // For indexing
+      start_date: startDate,
+      end_date: formattedEndDate,
+      status: "paid",
+      user_id: uuid,
     });
-    console.log("Subscription history recorded:", { uuid, tx_ref });
+    console.log("Subscription recorded:", { uuid, tx_ref, end_date: formattedEndDate });
 
-    res.redirect("http://localhost:5173/subscribe?status=success");
+    res.redirect(`${BASE_URL}/subscribe?status=success`);
   } catch (error) {
     console.error("Error verifying payment:", {
       message: error.message,
       response: error.response?.data,
     });
-    res.redirect("http://localhost:5173/subscribe?status=failed");
+    res.redirect(`${BASE_URL}/subscribe?status=failed&error=${encodeURIComponent(error.message)}`);
   }
 });
 
