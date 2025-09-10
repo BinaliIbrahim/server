@@ -1,9 +1,9 @@
-const express = require("express");
-const nodemailer = require("nodemailer");
-const admin = require("firebase-admin");
-const cors = require("cors");
-const dotenv = require("dotenv");
-const axios = require("axios");
+import express from "express";
+import nodemailer from "nodemailer";
+import admin from "firebase-admin";
+import cors from "cors";
+import dotenv from "dotenv";
+import axios from "axios";
 
 dotenv.config();
 
@@ -355,7 +355,7 @@ app.get("/payment-callback", async (req, res) => {
     const paymentRef = db.ref(`Payments/${tx_ref}`);
     console.log("Creating Firebase reference:", `Payments/${tx_ref}`);
     try {
-      await paymentRef.set({
+      const paymentRecord = {
         userId,
         email,
         firstName: user_name.split(' ')[0] || "User",
@@ -371,7 +371,16 @@ app.get("/payment-callback", async (req, res) => {
         verifiedAt: Date.now(),
         error: isSuccessful ? null : `Verification failed: ${paymentData.status || "unknown"}`,
         createdAt: new Date(paymentData.created_at).getTime() || Date.now(),
-      });
+      };
+
+      // Add start_date and end_date for successful payments
+      if (isSuccessful) {
+        const currentDate = new Date();
+        paymentRecord.start_date = currentDate.toISOString().split("T")[0];
+        paymentRecord.end_date = new Date(currentDate.setMonth(currentDate.getMonth() + 1)).toISOString().split("T")[0];
+      }
+
+      await paymentRef.set(paymentRecord);
       console.log(`Updated payment to ${isSuccessful ? "successful" : "failed"}:`, { userId, tx_ref });
     } catch (dbError) {
       console.error("Firebase write error in callback:", dbError.message);
@@ -380,15 +389,19 @@ app.get("/payment-callback", async (req, res) => {
       );
     }
 
-    // Update subscription end date for successful payment
+    // Update subscription dates for successful payment
     if (isSuccessful) {
       const currentDate = new Date();
+      const subscriptionStartDate = currentDate.toISOString().split("T")[0];
       currentDate.setMonth(currentDate.getMonth() + 1);
       const subscriptionEndDate = currentDate.toISOString().split("T")[0];
-      const subscriptionRef = db.ref(`users/${userId}/subscriptionEndDate`);
+      const subscriptionRef = db.ref(`users/${userId}`);
       try {
-        await subscriptionRef.set(subscriptionEndDate);
-        console.log("Subscription updated:", { userId, subscriptionEndDate });
+        await subscriptionRef.update({
+          subscriptionStartDate,
+          subscriptionEndDate,
+        });
+        console.log("Subscription updated:", { userId, subscriptionStartDate, subscriptionEndDate });
       } catch (dbError) {
         console.error("Firebase write error for subscription:", dbError.message);
       }
@@ -483,7 +496,7 @@ app.post("/api/payment-webhook", async (req, res) => {
     const paymentRef = db.ref(`Payments/${tx_ref}`);
     console.log("Creating Firebase reference (webhook):", `Payments/${tx_ref}`);
     try {
-      await paymentRef.set({
+      const paymentRecord = {
         userId,
         email,
         firstName: user_name.split(' ')[0] || "User",
@@ -499,22 +512,35 @@ app.post("/api/payment-webhook", async (req, res) => {
         verifiedAt: Date.now(),
         error: isSuccessful ? null : `Verification failed: ${paymentData.status || "unknown"}`,
         createdAt: new Date(paymentData.created_at).getTime() || Date.now(),
-      });
+      };
+
+      // Add start_date and end_date for successful payments
+      if (isSuccessful) {
+        const currentDate = new Date();
+        paymentRecord.start_date = currentDate.toISOString().split("T")[0];
+        paymentRecord.end_date = new Date(currentDate.setMonth(currentDate.getMonth() + 1)).toISOString().split("T")[0];
+      }
+
+      await paymentRef.set(paymentRecord);
       console.log(`Updated payment to ${isSuccessful ? "successful" : "failed"} (webhook):`, { userId, tx_ref });
     } catch (dbError) {
       console.error("Firebase write error in webhook:", dbError.message);
       return res.status(200).json({ message: "Webhook processed with database error" });
     }
 
-    // Update subscription end date for successful payment
+    // Update subscription dates for successful payment
     if (isSuccessful) {
       const currentDate = new Date();
+      const subscriptionStartDate = currentDate.toISOString().split("T")[0];
       currentDate.setMonth(currentDate.getMonth() + 1);
       const subscriptionEndDate = currentDate.toISOString().split("T")[0];
-      const subscriptionRef = db.ref(`users/${userId}/subscriptionEndDate`);
+      const subscriptionRef = db.ref(`users/${userId}`);
       try {
-        await subscriptionRef.set(subscriptionEndDate);
-        console.log("Subscription updated (webhook):", { userId, subscriptionEndDate });
+        await subscriptionRef.update({
+          subscriptionStartDate,
+          subscriptionEndDate,
+        });
+        console.log("Subscription updated (webhook):", { userId, subscriptionStartDate, subscriptionEndDate });
       } catch (dbError) {
         console.error("Firebase write error for subscription (webhook):", dbError.message);
       }
